@@ -1,0 +1,366 @@
+---
+title: "Monetary Intervention during the Great Depression"
+subtitle: "A First Replication Exercise"
+author: "Léo Zabrocki"
+date: "`r Sys.Date()`"
+output: tint::tintHtml
+link-citations: yes
+---
+
+```{marginfigure}
+![](figures/bank_mississippi.jpg)
+A bank in Tchula, Mississippi, November 1939. Source [here](https://mississippiencyclopedia.org/entries/banking/).
+```
+
+<style>
+body {
+text-align: justify}
+</style>
+
+```{r setup, include=FALSE, results='hide', warning=FALSE}
+library(knitr)
+opts_chunk$set(cache = FALSE,
+               echo = TRUE,
+               message = FALSE,
+               warning = FALSE,
+               dev = "CairoPNG",
+               dpi = 300)  
+``` 
+
+The goal of this document is to gently introduce you to the R programming language by replicating some results of the paper entitled *Monetary Intervention Mitigated Banking Panics during the Great Depression: Quasi-Experimental Evidence from a Federal Reserve District Border, 1929–1933*, written by Gary Richardson and William Troost, and published in the Journal of Political Economy---one of the top journal in Economics---in 2009. Below is the abstract of the paper:
+
+> *The Federal Reserve Act divided Mississippi between the 6th (Atlanta) and 8th (St.Louis) Districts. During the Great Depression, these districts’ policies differed. Atlanta championed monetary activism and
+the extension of aid to ailing banks. St.Louis eschewed expansionary
+initiatives. During a banking crisis in 1930, Atlanta expedited lending
+to banks in need. St.Louis did not. Outcomes differed across districts.
+In Atlanta, banks survived at higher rates, lending continued at higher
+levels, commerce contracted less, and recovery began earlier. These
+patterns indicate that central bank intervention influenced bank
+health, credit availability, and business activity.*
+
+The partition of Mississippi into two regional Federal Reserve
+Banks with opposite monetary policies provides a fantastic **natural experiment** to evaluate the effect of lending to troubled banks during a major economic crisis. After the collapse of the Cadlwell financial empire in November 1930, the Atlanta Federal Bank greatly increased bank lending in the Sixth
+District, while the St. Louis Federal Bank did not implement any policy (and even restricted lending a bit) in the
+Eighth District. The fact that this occurred within a state makes it credible that the Eight District can been used as a realistic counterfactual of would have happened in the Sixth District if it did not implement an expansionary monetary policy. We will briefly see in this document how economists analyze this type of historical events with a causal inference method called difference-in-differences.
+
+For more detailed explanations on this paper, please refer to the slides of the course. The replication exercise comes from the textbook [Mastering' Metrics](http://www.masteringmetrics.com/) by Joshua D. Angrist and Jörn-Steffen Pischke. Should you have any questions or find errors, please do not hesitate to reach me at leo.zabrocki@psemail.eu.
+
+# Loading Packages
+
+To reproduce exactly the `script_great_depression.html` document, we first need to have installed:
+
+* the [R](https://www.r-project.org/) programming language 
+* [RStudio](https://rstudio.com/), an integrated development environment for R, which will allow you to knit the `script_great_depression.html` file and interact with the R code chunks
+* the [R Markdown](https://rmarkdown.rstudio.com/) package
+* and the [tint](https://eddelbuettel.github.io/tint/tintHTML.html) package which provides the template for this document. [tint](https://eddelbuettel.github.io/tint/tintHTML.html) is based on the amazing books on data visualizing written by Edward Tufte.
+
+Once everything is set up, we load the following packages:
+
+```{r}
+library(here) # for file paths management
+library(knitr) # for generating dynamic report
+library(tidyverse) # for data manipulation and visualization
+library(lubridate) # for working with dates
+source(here::here("script_theme_tufte.R")) # custom ggplot theme
+
+# my custom colors
+my_blue <- "#0096c7"
+my_orange <- "#ff9100"
+```
+
+During the course, we will not rely on base R coding but use the packages from the Tidyverse, "an opinionated collection of R packages designed for data science. All packages share an underlying design philosophy, grammar, and data structures". If you want a solid introduction to R for data wrangling and visualization, I recommend you to read the two following free books:
+
+* [R for Data Science](https://r4ds.had.co.nz/index.html) by Hadley Wickham and Garrett Grolemund.
+* [Data Visualization: A practical introduction](https://socviz.co/) by Kieran Healy. For nice themes for your graphs in `ggplot2`, I highly recommend installing the [hrbrthemes](https://github.com/hrbrmstr/hrbrthemes).
+
+If you want a quicker introduction to R programming, I also recommend reading two documents I wrote and which are located in the `1.introduction/3.crash_course_r_programming` folder.
+
+# Exploratory Data Analysis
+
+In this section, we explore the data and make some graphs using the `ggplot2` package.
+
+## Data Loading
+
+We load the data using the following command:
+
+```{r}
+# loading the data
+data <- readRDS(here::here("data", "data_banks.rds"))
+```
+
+In the Environment section of RStudio, you should see that at a dataset with `r nrow(data)` observations and `r ncol(data)` was loaded. We can look at the first lines of the data:
+
+```{r}
+# displaying first rows of the data
+head(data) %>%
+  kable(., align=c("l", rep('c', 4)))
+```
+
+The codebook of the data is as follows:
+
+* `date` is a date in "year-month-day" format.
+* `bib6` is the number of banks in business in the 6th Federal Reserve Districts in Mississippi.
+* `bio6` is the number of banks in operations in the 6th Federal Reserve Districts in Mississippi.
+* `bib8` is the number of banks in business in the 8th Federal Reserve Districts in Mississippi.
+* `bio8` is the number of banks in operations in the 8th Federal Reserve Districts in Mississippi.
+
+Recall that:
+
+* Banks in operation are banks whose doors are open to the public.
+* Banks in business are banks that are not bankrupt.
+* The difference is the number of temporarily suspended banks.
+
+## Apparent Patterns
+
+Once the data are loaded, we can plot how the number of banks evolved over time. But before coding the graph, we will reshape the data in the long format:
+
+```{r}
+data_long <- data %>%
+# reshape data into long
+  pivot_longer(
+    cols = starts_with("bi"),
+    names_to = c("type", "district"),
+    names_pattern = "bi_?(.)(.*)",
+    values_to = "n_banks"
+  ) %>%
+# relabel type variable
+  mutate(type = ifelse(type == "b", "business", "operation"),
+         district = ifelse(district == 6, "6 Atlanta", "8 St. Louis"))
+
+# display the new data
+data_long
+```
+
+Once the dataset is reshaped, we can plot the time series of the number of banks by district and bank's type:
+
+```{r, fig.fullwidth = TRUE, fig.width = 10, fig.height = 5}
+data_long %>%
+  mutate(type = str_to_title(type)) %>%
+  # set the aesthetics
+  ggplot(., aes(x = date, y = n_banks, colour = district)) +
+  # plot lines
+  geom_line() +
+  # set the colours
+  scale_color_manual(values = c(my_blue, my_orange)) +
+  # add two annotations
+  geom_vline(xintercept = ymd("1930-11-07")) +
+  annotate("text", x = ymd("1930-05-01"), y = 160, label = "Caldwell\ncollapses") +
+  geom_vline(xintercept = ymd("1931-07-01"), linetype = "dotted") +
+  annotate("text", x = ymd("1932-06-01"), y = 160, label = "St. Louis adpots\nAtlanta's policies") +
+  # split the graph by bank's type
+  facet_wrap( ~ type) +
+  # add my custom theme
+  theme_tufte() +
+  # label the graph
+  labs(
+    title = "Number of Banks in Business and in Operations in the 6th and 8th Federal
+Reserve Districts in Mississippi, July 1929 to June 1933",
+x = "Date",
+y = "Number of Banks",
+color = "District"
+  )
+```
+
+```{r, echo = FALSE}
+# make the graph for the presentation
+graph_paper <- data_long %>%
+  mutate(type = str_to_title(type)) %>%
+  # select business banks
+  filter(type == "Business") %>%
+  # set the aesthetics
+  ggplot(., aes(x = date, y = n_banks, colour = district)) +
+  # plot lines
+  geom_line() +
+  # set the colours
+  scale_color_manual(values = c(my_blue, my_orange)) +
+  # add two annotations
+  geom_vline(xintercept = ymd("1930-11-07")) +
+  annotate("text", x = ymd("1930-05-01"), y = 160, label = "Caldwell\ncollapses") +
+  geom_vline(xintercept = ymd("1931-07-01"), linetype = "dotted") +
+  annotate("text", x = ymd("1932-05-01"), y = 160, label = "St. Louis adpots\nAtlanta's policies") +
+  # add my custom theme
+  theme_tufte() +
+  # label the graph
+  labs(
+    title = "Number of Banks in Business and in Operations in the 6th and 8th Federal
+Reserve Districts in Mississippi, July 1929 to June 1933",
+x = "Date",
+y = "Number of Banks",
+color = "District"
+  )
+
+# save the graph
+ggsave(
+  graph_paper,
+  filename = here::here("outputs", "graph_paper.pdf"),
+  width = 22,
+  height = 14,
+  units = "cm",
+  device = cairo_pdf
+)
+
+```
+
+We can see a massive drop in the number of banks after Cadlwell's collapse in Saint Louis's district. In the article, the authors present the same graph but by normalizing the time series data starting in June 1929:
+
+```{r, fig.fullwidth = TRUE, fig.width = 10, fig.height = 5}
+data_long %>%
+  mutate(type = str_to_title(type)) %>%
+  # normalize the time series
+  group_by(type, district) %>%
+  mutate(percentage = (100*n_banks)/n_banks[1]) %>%
+  # set aesthetics
+  ggplot(., aes(x = date, y = percentage, colour = district)) +
+  # plot lines
+  geom_line() +
+  # set the colors
+  scale_color_manual(values = c(my_blue, my_orange)) +
+  # add two annotations
+  geom_vline(xintercept = ymd("1930-11-07")) +
+  annotate("text", x = ymd("1930-05-01"), y = 90, label = "Caldwell\ncollapses") +
+  geom_vline(xintercept = ymd("1931-07-01"), linetype = "dotted") +
+  annotate("text", x = ymd("1932-06-01"), y = 90, label = "St. Louis adpots\nAtlanta's policies") +
+  # split the graph by bank's type
+  facet_wrap( ~ type) +
+  # add custom theme
+  theme_tufte() +
+  # label axes
+  labs(
+    title = "Percentage of Banks in Business and in Operations in the 6th and 8th Federal
+Reserve Districts in Mississippi, July 1929 to June 1933",
+x = "Date",
+y = "Percentage (%)",
+color = "District"
+  )
+```
+
+Again, we can see the decrease in banking activity in the district supervised by the St. Louis Federal Bank. We also see more clearly that banking activity was similar in two districts before the crisis.
+
+# Analyzing the Data
+
+
+Once the exploratory analysis of the data is deemed satisfactory, we can move to their statistical analysis. As explained in the article, the division of the state of Mississippi into two districts supervised by federal banks with different monetary policies during the crisis provide a unique natural experiment. To estimate the causal effect of the expansionary policy, we first define the treatment and control groups:
+
+* The Eight District supervised by the St. Louis Federal Bank is the control group since lending did not really change.
+* The Sixth District supervised by the Atlanta Federal Bank is a treatment group since lending was increase.
+
+Our outcome of interest is the number of banks still in business in each District on July 1, 1931, about 8 months after the
+beginning of the crisis. A naive analysis is to compare the difference in the number of banks still in business on that date:
+
+```{r}
+# compute naive difference in number of banks
+data_long %>%
+  filter(date == "1931-07-01") %>%
+  filter(type == "business") %>%
+  summarise(difference = n_banks[1] - n_banks[2])
+```
+
+We find that there were 11 less banks in business in the Eight District compared to the Sixth District. We could conclude that money lending was not efficient to save banks. However, the two districts were not exactly similar before the crisis as there were more banks in the Eight District. If we work at the yearly level (we only select the number of banks still in business for each year on the first of July), we clearly see this difference in the number of banks before the crisis:
+
+```{r, fig.fullwidth = TRUE, fig.width = 10, fig.height = 6}
+data_long %>%
+  # select the first day of each july
+  filter(month(date) == 7L, mday(date) == 1L) %>%
+  # select banks in business
+  filter(type == "business") %>%
+  # create year variable
+  mutate(year = year(date)) %>%
+  # set aesthetics
+  ggplot(., aes(x = year, y = n_banks, colour = district)) +
+  # plot lines
+  geom_line(linetype = "dotted") +
+  geom_point(shape = 21, size = 4, fill = "white") +
+  # set the colors
+  scale_color_manual(values = c(my_blue, my_orange)) +
+  # add custom theme
+  theme_tufte() +
+  # add labels
+  labs(
+    title = "Number of Banks in Business in the 6th and 8th Federal
+Reserve Districts in Mississippi, July 1929 to June 1933",
+x = "Year",
+y = "Number of Banks\nin Business",
+color = "District"
+  )
+```
+
+To adjust for this difference across districts in the pre-treatment period, economists rely the difference-in-differences method. We denote $Y_{dt}$ the number of banks in business in year $t$ and district $d$. The difference-in-differences estimate $\delta_{DD}$ of the effect of money lending in the Sixth District is for the 1930-1931 period:
+
+\begin{equation}
+\delta_{DD} = (Y_{6,1931}-Y_{6,1930}) - (Y_{8,1931}-Y_{8,1930})
+\end{equation}
+
+
+Instead of levels, the difference-in-differences just compares the changes in the two groups. We can compute the value of the estimate with the following code and using the initial dataset `data`:
+
+```{r}
+data %>%
+  # select the first day of each july
+  filter(month(date) == 7L, mday(date) == 1L) %>%
+  # create year
+  mutate(year = year(date)) %>%
+  # select banks in business
+  select(year, matches("bi[b][68]")) %>%
+  # select years 1930 & 1931
+  filter(year %in% c(1930, 1931)) %>%
+  # compute the two first differences
+  summarise(first_difference_6 = bib6[2]-bib6[1],
+            first_difference_8 = bib8[2]-bib8[1]) %>%
+  # compute the did estimate
+  mutate(did = first_difference_6 - first_difference_8)
+```
+
+It seems therefore that the Atlanta Federal Bank saved 19 banks with its expansionary monetary policy. Is it a lot? In 1930, there were 135 banks in business, which means that about 14% of the banks were saved by the policy.
+
+The difference-in-differences is thus a powerful method to create the counterfactual of what would had happened in the Sixth District had it not implemented its expansionary policy. We can see the logic of this method of with the following graph:
+
+```{r, fig.fullwidth = TRUE, fig.width = 10, fig.height = 6}
+data %>%
+  # select the first day of each july
+  filter(month(date) == 7L, mday(date) == 1L) %>%
+  # create year
+  mutate(year = year(date)) %>%
+  # select banks in business
+  select(year, matches("bi[b][68]")) %>%
+  # sort by year
+  arrange(year) %>%
+  # compute the difference between the two districts in 1930
+  mutate(diff86 = bib8[year == 1930] - bib6[year == 1930],
+  # create the counterfactual
+         counterfactual = if_else(year >= 1930, bib8 - diff86, NA_integer_)) %>%
+  select(-diff86) %>%
+  # reshape in long format
+  pivot_longer(cols = -c(year), names_to = "district", values_to = "n_banks") %>%
+  # relabel the district variable
+  mutate(district = case_when(district == "bib6" ~ "6 Atlanta",
+                              district == "bib8" ~ "8 St. Louis",
+                              district == "counterfactual" ~ "6 Counterfactual")) %>%
+  # make the graph
+  ggplot(., aes(x = year, y = n_banks, colour = district)) +
+  # plot lines
+  geom_line(linetype = "dotted") +
+  # display did estimate
+  geom_segment(aes(x = 1931, y = 102, xend = 1931, yend = 121), colour = "black") +
+  annotate("text", x = 1931+0.5, y = 110, label = "DiD Estimate") +
+  # plot points
+  geom_point(shape = 21, size = 4, fill = "white") +
+  # set the colors
+  scale_color_manual(values = c(my_blue, "#0a9396", my_orange)) +
+  # add custom theme
+  theme_tufte() +
+  # add labels
+  labs(
+    title = "Counterfactual of the expansionary Monetary Policy",
+x = "Year",
+y = "Number of Banks\nin Business",
+color = "District"
+  )
+```
+
+The green line on the graph is the counterfactual number of banks for the Sixth District. The black vertical lines is the difference-in-differences estimate. This method however rests on the strong assumption that the two districts had **common trends** before the crisis: "absent any policy differences, the Eighth District trend is what we
+should have expected to see in the Sixth". We could visually check that this assumption is valid if we had more observations before the occurrence of the treatment (i.e., before 1930 in our case).
+
+In a few courses from now, we will learn in much greater details how difference-in-differences works using the Neyman-Rubin causal model, its implementation with linear regression, and how to compute uncertainty around the estimate of the causal effect (which is not so straightforward with time-series data and a small number of groups exposed to the treatment). 
+
+
+
